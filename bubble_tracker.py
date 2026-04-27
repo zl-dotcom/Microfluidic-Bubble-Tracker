@@ -6,6 +6,7 @@ import sys
 import tkinter as tk
 from tkinter import filedialog
 
+
 # ==========================================
 # 辅助函数：绘制多边形 ROI
 # ==========================================
@@ -40,7 +41,7 @@ def get_polygon_roi(frame, window_name):
 # ==========================================
 # 1. 自由选择视频文件
 root = tk.Tk()
-root.withdraw()  # 隐藏 tkinter 主窗口
+root.withdraw()
 video_path = filedialog.askopenfilename(
     title="请选择微流控视频文件",
     filetypes=[("视频文件", "*.avi *.mp4 *.mkv"), ("所有文件", "*.*")]
@@ -71,7 +72,7 @@ mask_right_poly = np.zeros(first_frame.shape[:2], dtype=np.uint8)
 cv2.fillPoly(mask_left_poly, [pts_left], 255)
 cv2.fillPoly(mask_right_poly, [pts_right], 255)
 
-# 3. 初始化算法
+# 3. 初始化算法与变量
 backSub = cv2.createBackgroundSubtractorMOG2(history=100, varThreshold=50, detectShadows=False)
 kernel_close = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (21, 21))
 
@@ -81,35 +82,70 @@ right_occupied, right_temp_max_area, right_start_time = False, 0, 0
 
 area_threshold = 2000
 
+# 🌟 新增：预热相关变量
+warm_up_frames = int(fps * 0.5)  # 0.5秒对应的帧数
+current_frame_count = 0  # 当前处理的帧计数
+
 # 控制面板设置
 cv2.namedWindow('Monitoring (ESC to Stop)')
 
+
 def on_time_trackbar(val):
-    global backSub
+    global backSub, current_frame_count  # 声明全局变量，以便重置预热
     target_frame = int(val * fps)
     current_pos = int(cap.get(cv2.CAP_PROP_POS_FRAMES))
     if abs(target_frame - current_pos) > fps:
         cap.set(cv2.CAP_PROP_POS_FRAMES, target_frame)
+        # 清空背景消除器
         backSub = cv2.createBackgroundSubtractorMOG2(history=100, varThreshold=50, detectShadows=False)
+        # 🌟 拖动进度条后，将帧计数清零，强制重新预热 0.5 秒
+        current_frame_count = 0
+        print(f"\n[提示] 时间已跳转至 {val} 秒附近，正在重新预热背景...")
+
 
 cv2.createTrackbar('Time(s)', 'Monitoring (ESC to Stop)', 0, total_seconds, on_time_trackbar)
 default_delay = int((1000 / fps) * 10)
 cv2.createTrackbar('Delay(ms)', 'Monitoring (ESC to Stop)', default_delay, 200, lambda x: None)
 
-print("\n" + "="*40)
+print("\n" + "=" * 40)
 print("开始分析视频... (按 'ESC' 键可提前保存并退出)")
 print("控制台将实时输出记录到的气泡数据：")
-print("="*40 + "\n")
+print("=" * 40 + "\n")
 
 while True:
     ret, frame = cap.read()
     if not ret: break
 
+    current_frame_count += 1
     current_time = cap.get(cv2.CAP_PROP_POS_MSEC) / 1000.0
     cv2.setTrackbarPos('Time(s)', 'Monitoring (ESC to Stop)', int(current_time))
 
     blurred = cv2.GaussianBlur(frame, (5, 5), 0)
+    # 每一帧都必须经过 backSub，算法才能学习
     fgMask = backSub.apply(blurred)
+
+    # ==========================================
+    # 🌟 预热拦截逻辑
+    # ==========================================
+    if current_frame_count < warm_up_frames:
+        # 画出基础边界框和时间
+        cv2.polylines(frame, [pts_left], True, (0, 255, 0), 2)
+        cv2.polylines(frame, [pts_right], True, (0, 0, 255), 2)
+        cv2.putText(frame, f"Time: {current_time:.3f} s", (20, 40), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
+
+        # 屏幕上打出预热提示字样 (黄色)
+        cv2.putText(frame, "Learning Background...", (20, 80), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 255), 2)
+
+        cv2.imshow('Monitoring (ESC to Stop)', frame)
+        cv2.imshow('Detection Mask (Internal View)', fgMask)
+
+        current_delay = cv2.getTrackbarPos('Delay(ms)', 'Monitoring (ESC to Stop)')
+        if cv2.waitKey(max(1, current_delay)) & 0xFF == 27: break
+
+        # 拦截：跳过本帧的后续气泡检测，进入下一帧
+        continue
+
+    # 预热结束，开始正常的二值化和形态学处理
     _, thresh = cv2.threshold(fgMask, 200, 255, cv2.THRESH_BINARY)
     thresh = cv2.morphologyEx(thresh, cv2.MORPH_CLOSE, kernel_close)
 
@@ -137,7 +173,6 @@ while True:
     else:
         if left_occupied:
             left_results.append((left_start_time, left_temp_max_area))
-            # 🌟 优化后的左侧实时输出格式
             print(f"✅ [实时记录] 时间点: {left_start_time:.3f} s | 位置: 左边 | 面积数值: {int(left_temp_max_area)}")
             left_occupied = False
             left_temp_max_area = 0
@@ -163,7 +198,6 @@ while True:
     else:
         if right_occupied:
             right_results.append((right_start_time, right_temp_max_area))
-            # 🌟 优化后的右侧实时输出格式
             print(f"✅ [实时记录] 时间点: {right_start_time:.3f} s | 位置: 右边 | 面积数值: {int(right_temp_max_area)}")
             right_occupied = False
             right_temp_max_area = 0
@@ -175,8 +209,10 @@ while True:
     cv2.polylines(frame, [pts_right], True, (0, 0, 255), 2)
     cv2.putText(frame, f"Time: {current_time:.3f} s", (20, 40), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
     frame_w = frame.shape[1]
-    cv2.putText(frame, f"L Area: {int(current_area_l)}", (frame_w - 280, 40), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
-    cv2.putText(frame, f"R Area: {int(current_area_r)}", (frame_w - 280, 80), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 255), 2)
+    cv2.putText(frame, f"L Area: {int(current_area_l)}", (frame_w - 280, 40), cv2.FONT_HERSHEY_SIMPLEX, 0.8,
+                (0, 255, 0), 2)
+    cv2.putText(frame, f"R Area: {int(current_area_r)}", (frame_w - 280, 80), cv2.FONT_HERSHEY_SIMPLEX, 0.8,
+                (0, 0, 255), 2)
 
     cv2.imshow('Monitoring (ESC to Stop)', frame)
     combined_fg = cv2.bitwise_or(roi_left, roi_right)
@@ -191,13 +227,13 @@ cv2.destroyAllWindows()
 # ==========================================
 # 4. 统计输出与导出
 # ==========================================
-print("\n" + "="*40)
+print("\n" + "=" * 40)
 print("📊 最终统计分析报告")
-print("="*40)
+print("=" * 40)
 print(f"🔹 左侧管道 (Left) 气泡总数: {len(left_results)}")
 print(f"🔸 右侧管道 (Right) 气泡总数: {len(right_results)}")
 print(f"💡 合计检测总次数: {len(left_results) + len(right_results)}")
-print("="*40)
+print("=" * 40)
 
 video_dir = os.path.dirname(video_path)
 video_name_stem = os.path.splitext(os.path.basename(video_path))[0]
