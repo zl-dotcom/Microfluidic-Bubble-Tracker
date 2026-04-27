@@ -33,7 +33,7 @@
 
 ### 🚀 如何使用
 **方式一：直接运行独立版 (推荐 Windows 用户)**
-无需配置任何 Python 环境，直接在 [Releases](https://github.com/YourUsername/YourRepoName/releases) 页面下载 `bubble_analyzer.exe`，双击运行即可。
+无需配置任何 Python 环境，直接在 [Releases](https://github.com/zl-dotcom/Microfluidic-Bubble-Tracker/releases/tag/v1.3) 页面下载 `bubble_analyzer.exe`，双击运行即可。
 
 **方式二：通过 Python 源码运行**
 ```bash
